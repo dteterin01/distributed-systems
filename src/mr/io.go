@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 )
@@ -31,31 +30,4 @@ func readFile(filename string) ([]byte, error) {
 	}
 
 	return contents, nil
-}
-
-func readKVResultFromFile(filenames []string) (map[string][]string, error) {
-	kvMap := make(map[string][]string)
-
-	// read input file
-	for _, filename := range filenames {
-		file, err := os.Open(filename)
-		if checkError(err, fmt.Sprintf("Failed during open file %s", filename)) {
-			return nil, err
-		}
-
-		defer file.Close()
-
-		decoder := json.NewDecoder(file)
-		var kv KeyValue
-
-		for decoder.More() {
-			err := decoder.Decode(&kv)
-			checkError(err, "Failed to decode key-value pair.")
-			if err != nil {
-				return nil, err
-			}
-			kvMap[kv.Key] = append(kvMap[kv.Key], kv.Value)
-		}
-	}
-	return kvMap, nil
 }
