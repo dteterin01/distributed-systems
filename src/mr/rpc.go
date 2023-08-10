@@ -14,31 +14,46 @@ import (
 )
 import "strconv"
 
-type RequestTaskReply struct {
-	state    TaskState
-	taskId   int
-	taskFile string
-	nReduce  int
+type GetReduceCountArgs struct {
 }
 
-type RequestTask struct {
-	workerId int
+type GetReduceCountReply struct {
+	ReduceCount int
+}
+
+func getReduceCount() (int, bool) {
+	args := GetReduceCountArgs{}
+	reply := GetReduceCountReply{}
+	succ := call("Master.GetReduceCount", &args, &reply)
+
+	return reply.ReduceCount, succ
+}
+
+type RequestTaskReply struct {
+	State    TaskState
+	TaskId   int
+	TaskFile string
+	NReduce  int
+}
+
+type RequestTaskArgs struct {
+	WorkerId int
 }
 
 func requestTask(workerId int) (*RequestTaskReply, bool) {
-	requestArgs := RequestTask{
-		workerId: workerId,
+	args := RequestTaskArgs{
+		WorkerId: workerId,
 	}
 	reply := RequestTaskReply{}
-	success := call("Master.RequestTask", &requestArgs, &reply)
+	success := call("Master.RequestTask", &args, &reply)
 
 	return &reply, success
 }
 
 type ReportTaskArgs struct {
-	workerId int
-	state    TaskState
-	taskId   int
+	WorkerId int
+	State    TaskState
+	TaskId   int
 }
 
 type ReportTaskReply struct {
@@ -47,9 +62,9 @@ type ReportTaskReply struct {
 
 func reportTaskDone(state TaskState, taskId int, workerId int) (bool, bool) {
 	args := ReportTaskArgs{
-		workerId: workerId,
-		state:    state,
-		taskId:   taskId,
+		WorkerId: workerId,
+		State:    state,
+		TaskId:   taskId,
 	}
 	reply := ReportTaskReply{}
 	succ := call("Master.ReportTaskDone", &args, &reply)

@@ -2,6 +2,7 @@ package mr
 
 import (
 	"log"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -10,6 +11,7 @@ import "os"
 import "net/rpc"
 import "net/http"
 
+const TempDir = "tmp"
 const taskTimeout = 10 // seconds
 
 type JobStage int
@@ -73,10 +75,11 @@ func (m *Master) preInitTasks(
 	count int,
 	files []string,
 	builder func(int, string) Task,
+	file func(idx int, files []string) string,
 	appender func(*Master, Task)) {
 
 	for i := 0; i < count; i++ {
-		mTask := builder(i, files[i])
+		mTask := builder(i, file(i, files))
 		appender(m, mTask)
 	}
 }
@@ -137,50 +140,61 @@ func (m *Master) waitForTask(task *Task) {
 
 // Rpc handlers
 
-func (m *Master) RequestTask(args *RequestTask, reply *RequestTaskReply) {
+func (m *Master) GetReduceCount(args *GetReduceCountArgs, reply *GetReduceCountReply) error {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	reply.ReduceCount = len(m.reduceTasks)
+
+	return nil
+}
+
+func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
 	m.mtx.Lock()
 	var task *Task
 	if m.nMap > 0 {
-		task = m.findNextTaskForJob(m.mapTasks, args.workerId)
+		task = m.findNextTaskForJob(m.mapTasks, args.WorkerId)
 	} else if m.nReduce > 0 {
-		task = m.findNextTaskForJob(m.reduceTasks, args.workerId)
+		task = m.findNextTaskForJob(m.reduceTasks, args.WorkerId)
 	} else {
 		task = &Task{ExitState, Finish, -1, "", -1}
 	}
 
-	reply.taskId = task.idx
-	reply.taskFile = task.file
-	reply.state = task.state
-	reply.nReduce = m.nReduce
+	reply.TaskId = task.idx
+	reply.TaskFile = task.file
+	reply.State = task.state
+	reply.NReduce = m.nReduce
 
 	m.mtx.Unlock()
 
 	go m.waitForTask(task)
+	return nil
 }
 
-func (m *Master) ReportTaskDone(args *ReportTaskArgs, reply *ReportTaskReply) {
+func (m *Master) ReportTaskDone(args *ReportTaskArgs, reply *ReportTaskReply) error {
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
 
 	var task *Task
-	if args.state == MapState {
-		task = &m.mapTasks[args.workerId]
-	} else if args.state == ReduceState {
-		task = &m.reduceTasks[args.workerId]
+	if args.State == MapState {
+		task = &m.mapTasks[args.TaskId]
+	} else if args.State == ReduceState {
+		task = &m.reduceTasks[args.TaskId]
 	} else {
-		return
+		return nil
 	}
 
-	if args.workerId == task.workerId && task.status == Schedule {
+	if args.WorkerId == task.workerId && task.status == Schedule {
 		task.status = Finish
-		if args.state == MapState && m.nMap > 0 {
+		if args.State == MapState && m.nMap > 0 {
 			m.nMap--
-		} else if args.state == ReduceState && m.nReduce > 0 {
+		} else if args.State == ReduceState && m.nReduce > 0 {
 			m.nReduce--
 		}
 	}
 
 	reply.CanExit = m.nMap == 0 && m.nReduce == 0
+	return nil
 }
 
 // build master
@@ -193,16 +207,41 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.nReduce = nReduce
 	m.nMap = nMap
 
+	m.mapTasks = make([]Task, 0, nMap)
+	m.reduceTasks = make([]Task, 0, nReduce)
+
 	m.preInitTasks(nMap, files, createMapTask,
+		func(idx int, files []string) string {
+			return files[idx]
+		},
 		func(m *Master, task Task) {
 			m.mapTasks = append(m.mapTasks, task)
 		})
 
 	m.preInitTasks(nReduce, files, createReduceTask,
+		func(idx int, files []string) string {
+			return ""
+		},
 		func(m *Master, task Task) {
 			m.reduceTasks = append(m.reduceTasks, task)
 		})
 
 	m.server()
+
+	outFiles, _ := filepath.Glob("mr-out*")
+	for _, f := range outFiles {
+		if err := os.Remove(f); err != nil {
+			log.Fatalf("Cannot remove file %v\n", f)
+		}
+	}
+	err := os.RemoveAll(TempDir)
+	if err != nil {
+		log.Fatalf("Cannot remove temp directory %v\n", TempDir)
+	}
+	err = os.Mkdir(TempDir, 0755)
+	if err != nil {
+		log.Fatalf("Cannot create temp directory %v\n", TempDir)
+	}
+
 	return &m
 }

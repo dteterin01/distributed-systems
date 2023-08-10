@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"os"
 	"time"
 )
@@ -29,19 +30,27 @@ type WorkerInfo struct {
 func Worker(
 	mapF func(string, string) []KeyValue,
 	reduceF func(string, []string) string) {
+	workerId := os.Getpid()
 
 	info := WorkerInfo{
 		mapF:     mapF,
 		reduceF:  reduceF,
-		workerId: os.Getpid(),
+		workerId: workerId,
 	}
 
-	info.scheduleWorkStealing()
+	info.schedule()
 }
 
-func (w *WorkerInfo) scheduleWorkStealing() {
+func (w *WorkerInfo) schedule() {
 
-	for true {
+	n, succ := getReduceCount()
+	if succ == false {
+		fmt.Println("Failed to get reduce task count, worker exiting.")
+		return
+	}
+	w.reduceCount = n
+
+	for {
 		reply, success := requestTask(w.workerId)
 
 		if success == false {
@@ -49,21 +58,22 @@ func (w *WorkerInfo) scheduleWorkStealing() {
 			return
 		}
 
-		if reply.state == ExitState {
+		if reply.State == ExitState {
 			log.Fatal("All tasks done worker exiting.")
 			return
 		}
 
 		exit, succ := false, true
-		switch reply.state {
+		switch reply.State {
 		case NoTask:
 			// All map/reduce task are schedule
 			break
 		case MapState:
-			mapState(w.workerId, reply.taskId, w.reduceCount, reply.taskFile, w.mapF)
-			exit, succ = reportTaskDone(MapState, reply.taskId, w.workerId)
+			mapState(w.workerId, reply.TaskId, w.reduceCount, reply.TaskFile, w.mapF)
+			exit, succ = reportTaskDone(MapState, reply.TaskId, w.workerId)
 		case ReduceState:
-			reduceState(w.workerId, reply.taskId, w.reduceCount, "", w.reduceF)
+			reduceState(w.workerId, reply.TaskId, w.reduceF)
+			exit, succ = reportTaskDone(ReduceState, reply.TaskId, w.workerId)
 		default:
 			break
 		}

@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -33,25 +34,36 @@ func preparerMapResultForReduceAndSaveOnFS(
 	nReduce int,
 	content []KeyValue,
 ) error {
-	encoders := make([]*json.Encoder, nReduce)
-	for i := range encoders {
-		filename := reduceName(workerId, mapTask, i)
-		file, err := os.Create(filename)
+	prefix := fmt.Sprintf("%v/mr-%v", TempDir, mapTask)
+	files := make([]*os.File, 0, nReduce)
+	buffers := make([]*bufio.Writer, 0, nReduce)
+	encoders := make([]*json.Encoder, 0, nReduce)
 
-		if err != nil {
-			return err
-		}
-
-		file.Close()
-		encoders[i] = json.NewEncoder(file)
+	for i := 0; i < nReduce; i++ {
+		filePath := fmt.Sprintf("%v-%v-%v", prefix, i, workerId)
+		file, _ := os.Create(filePath)
+		buf := bufio.NewWriter(file)
+		files = append(files, file)
+		buffers = append(buffers, buf)
+		encoders = append(encoders, json.NewEncoder(buf))
 	}
 
+	// write map outputs to temp files
 	for _, kv := range content {
 		idx := ihash(kv.Key) % nReduce
-		err := encoders[idx].Encode(&kv)
-		if checkError(err, "Failed to encode key-value pair.") {
-			return err
-		}
+		encoders[idx].Encode(&kv)
+	}
+
+	// flush file buffer to disk
+	for _, buf := range buffers {
+		buf.Flush()
+	}
+
+	// atomically rename temp files to ensure no one observes partial files
+	for i, file := range files {
+		file.Close()
+		newPath := fmt.Sprintf("%v-%v", prefix, i)
+		os.Rename(file.Name(), newPath)
 	}
 	return nil
 }

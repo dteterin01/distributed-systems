@@ -2,36 +2,58 @@ package mr
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 )
 
 func reduceState(
 	workerId int,
 	reduceTask int,
-	nMap int,
-
-	outputFilename string,
 	reduceF func(key string, values []string) string,
 ) {
-	generatedFilenames := make([]string, nMap)
-	for i, _ := range generatedFilenames {
-		generatedFilenames[i] = reduceName(workerId, i, reduceTask)
+	files, _ := filepath.Glob(fmt.Sprintf("%v/mr-%v-%v", TempDir, "*", reduceTask))
+	kvMap := make(map[string][]string)
+	var kv KeyValue
+
+	for _, filePath := range files {
+		file, _ := os.Open(filePath)
+
+		dec := json.NewDecoder(file)
+		for dec.More() {
+			dec.Decode(&kv)
+			kvMap[kv.Key] = append(kvMap[kv.Key], kv.Value)
+		}
 	}
 
-	kvResult, err := readKVResultFromFile(generatedFilenames)
-	if err != nil {
-		return
+	writeReduceOutput(reduceF, kvMap, reduceTask, workerId)
+}
+
+func writeReduceOutput(
+	reducef func(string, []string) string,
+	kvMap map[string][]string,
+	reduceId int,
+	workerId int) {
+
+	// sort the kv map by key
+	keys := make([]string, 0, len(kvMap))
+	for k := range kvMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// Create temp file
+	filePath := fmt.Sprintf("%v/mr-out-%v-%v", TempDir, reduceId, workerId)
+	file, _ := os.Create(filePath)
+
+	// Call reduce and write to temp file
+	for _, k := range keys {
+		fmt.Fprintf(file, "%v %v\n", k, reducef(k, kvMap[k]))
 	}
 
-	file, err := os.Create(outputFilename)
-	checkError(err, "Failed to create output file.")
-	defer file.Close()
-	encoder := json.NewEncoder(file)
-
-	for key, values := range kvResult {
-		reducedValue := reduceF(key, values)
-		kv := KeyValue{key, reducedValue}
-		err := encoder.Encode(&kv)
-		checkError(err, "Failed to encode key-value pair.")
-	}
+	// atomically rename temp files to ensure no one observes partial files
+	file.Close()
+	newPath := fmt.Sprintf("mr-out-%v", reduceId)
+	os.Rename(filePath, newPath)
 }
