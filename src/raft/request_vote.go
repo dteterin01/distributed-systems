@@ -4,7 +4,6 @@ type RequestVoteArgs struct {
 	Term        int
 	CandidateId int
 
-	//unused before second lab
 	LastLogIndex int
 	LastLogTerm  int
 }
@@ -23,16 +22,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term >= rf.term {
 		if args.Term > rf.term {
-			rf.state = Follower
-			rf.votedFor = -1
-			rf.term = args.Term
+			rf.changeToFollowerState(args.Term)
 		}
 
-		if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+		if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.isUpToDate(args.LastLogTerm, args.LastLogIndex) {
 			reply.VoteGranted = true
-			reply.Term = args.Term
-			rf.votedFor = args.CandidateId
-			rf.chanGrantVote <- true
+			rf.voteCandidate(args.CandidateId)
 		}
 	}
 }
@@ -68,7 +63,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -85,9 +79,9 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 
 	if rf.term < reply.Term {
-		rf.term = reply.Term
-		rf.state = Follower
-		rf.votedFor = -1
+		// revert to follower state and update current term
+		rf.changeToFollowerState(reply.Term)
+		return ok
 	}
 
 	return ok
@@ -95,9 +89,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) broadcastRequestVote() {
 	args := rf.buildRequestVote()
-	for peer := range rf.peers {
-		if peer != rf.me && rf.state == Candidate {
-			go rf.sendRequestVote(peer, args, &RequestVoteReply{})
+
+	for server := range rf.peers {
+		if server != rf.me && rf.state == Candidate {
+			go rf.sendRequestVote(server, args, &RequestVoteReply{})
 		}
 	}
 }
@@ -107,7 +102,9 @@ func (rf *Raft) buildRequestVote() *RequestVoteArgs {
 	defer rf.mu.Unlock()
 
 	return &RequestVoteArgs{
-		Term:        rf.term,
-		CandidateId: rf.me,
+		Term:         rf.term,
+		CandidateId:  rf.me,
+		LastLogIndex: rf.getLastLogIndex(),
+		LastLogTerm:  rf.getLastLogTerm(),
 	}
 }

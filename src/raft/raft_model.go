@@ -15,11 +15,6 @@ import "../labrpc"
 // ApplyMsg, but set CommandValid to false for these other uses.
 //
 
-type LogEntry struct {
-	Term    int
-	Coomand interface{}
-}
-
 type State byte
 
 const (
@@ -27,6 +22,11 @@ const (
 	Follower
 	Candidate
 )
+
+type LogEntry struct {
+	Term    int
+	Command interface{}
+}
 
 //
 // A Go object implementing a single Raft peer.
@@ -52,7 +52,77 @@ type Raft struct {
 	state     State
 	voteCount int
 
+	nextIndex  []int
+	matchIndex []int
+
+	applyChan       chan ApplyMsg
 	chanGrantVote   chan bool
 	chanWinElection chan bool
 	chanHeartBeat   chan bool
+}
+
+func (rf *Raft) changeStateConcurrentlyArgs(
+	foo func(var1 int),
+	var1 int,
+) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	foo(var1)
+}
+
+func (rf *Raft) changeStateConcurrently(
+	foo func(),
+) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	foo()
+}
+
+func (rf *Raft) changeStateToCandidate() {
+	defer rf.persist()
+
+	rf.term++
+	rf.votedFor = rf.me
+	rf.voteCount = 1
+}
+
+func (rf *Raft) changeToLeaderState() {
+	defer rf.persist()
+
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
+
+	nextLogIndex := rf.getLastLogIndex() + 1
+
+	for i := range rf.nextIndex {
+		rf.nextIndex[i] = nextLogIndex
+	}
+}
+
+func (rf *Raft) voteCandidate(candidateId int) {
+	defer rf.persist()
+
+	rf.votedFor = candidateId
+	rf.chanGrantVote <- true
+}
+
+func (rf *Raft) changeToFollowerState(term int) {
+	defer rf.persist()
+
+	rf.state = Follower
+	rf.votedFor = -1
+	rf.term = term
+}
+
+func (rf *Raft) isUpToDate(candidateTerm int, candidateIndex int) bool {
+	term, index := rf.getLastLogTerm(), rf.getLastLogIndex()
+	return candidateTerm > term || (candidateTerm == term && candidateIndex >= index)
+}
+
+func (rf *Raft) getLastLogTerm() int {
+	return rf.log[len(rf.log)-1].Term
+}
+
+func (rf *Raft) getLastLogIndex() int {
+	return len(rf.log) - 1
 }

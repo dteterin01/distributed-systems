@@ -5,13 +5,13 @@ import (
 	"time"
 )
 
-const RandomWaitIncrement int32 = 400
-const Wait int32 = 300
+const RandomWaitIncrement int32 = 1000
+const Wait int32 = 500
 
 const RandomWaitElectionIncrement int32 = 400
 const WaitElection int32 = 300
 
-const BroadcastHeartBeat = 60
+const BroadcastHeartBeat = 200
 
 func (rf *Raft) eventLoop() {
 	for !rf.killed() {
@@ -24,34 +24,18 @@ func (rf *Raft) eventLoop() {
 				rf.state = Candidate
 			}
 		case Candidate:
-			rf.changeStateToCandidate()
+			rf.changeStateConcurrently(rf.changeStateToCandidate)
 			go rf.broadcastRequestVote()
-
 			select {
 			case <-rf.chanHeartBeat:
 				rf.state = Follower
 			case <-rf.chanWinElection:
-				rf.changeStageToLeader()
+				rf.changeStateConcurrently(rf.changeToLeaderState)
 			case <-time.After(time.Millisecond * time.Duration(rand.Int31()%RandomWaitElectionIncrement+WaitElection)):
 			}
 		case Leader:
-			go rf.broadcastHeartbeat()
-			time.Sleep(time.Microsecond * BroadcastHeartBeat)
+			go rf.broadcastAppendEntries()
+			time.Sleep(time.Millisecond * BroadcastHeartBeat)
 		}
 	}
-}
-
-func (rf *Raft) changeStageToLeader() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	rf.state = Leader
-}
-
-func (rf *Raft) changeStateToCandidate() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	rf.term++
-	rf.votedFor = rf.me
-	rf.voteCount = 1
 }
