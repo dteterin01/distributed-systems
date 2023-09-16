@@ -1,13 +1,20 @@
 package kvraft
 
-import "../labrpc"
+import (
+	"../labrpc"
+	"sync"
+)
 import "crypto/rand"
 import "math/big"
-
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+
+	mu        sync.Mutex
+	leader    int
+	requestId int64
+	clientId  int64
 }
 
 func nrand() int64 {
@@ -20,7 +27,11 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	// You'll have to add code here.
+	// You'll have to add code here
+
+	ck.clientId = nrand()
+	ck.requestId = 0
+	ck.leader = 0
 	return ck
 }
 
@@ -37,9 +48,22 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
+	args := GetArgs{}
+	args.Key = key
+	args.ClientId = ck.clientId
+	ck.mu.Lock()
+	args.RequestId = ck.requestId
+	ck.requestId++
+	ck.mu.Unlock()
 
-	// You will have to modify this function.
-	return ""
+	for ; ; ck.leader = (ck.leader + 1) % len(ck.servers) {
+		server := ck.servers[ck.leader]
+		reply := GetReply{}
+		ok := server.Call("KVServer.Get", &args, &reply)
+		if ok && !(reply.Err == ErrWrongLeader) {
+			return reply.Value
+		}
+	}
 }
 
 //
@@ -53,12 +77,29 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	args := PutAppendArgs{}
+	args.Key = key
+	args.Value = value
+	args.Op = op
+	args.ClientId = ck.clientId
+	ck.mu.Lock()
+	args.RequestId = ck.requestId
+	ck.requestId++
+	ck.mu.Unlock()
+
+	for ; ; ck.leader = (ck.leader + 1) % len(ck.servers) {
+		server := ck.servers[ck.leader]
+		reply := GetReply{}
+		ok := server.Call("KVServer.PutAppend", &args, &reply)
+		if ok && !(reply.Err == ErrWrongLeader) {
+			return
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
+	ck.PutAppend(key, value, PUT)
 }
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
+	ck.PutAppend(key, value, APPEND)
 }

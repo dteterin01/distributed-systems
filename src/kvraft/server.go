@@ -3,10 +3,11 @@ package kvraft
 import (
 	"../labgob"
 	"../labrpc"
-	"log"
 	"../raft"
+	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const Debug = 0
@@ -18,11 +19,25 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+const (
+	GET    = "GET"
+	PUT    = "PUT"
+	APPEND = "APPEND"
+)
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+
+	// command info
+	Op    string // get | put | append
+	Key   string
+	Value string
+
+	// client info
+	RequestId int64
+	ClientId  int64
 }
 
 type KVServer struct {
@@ -35,15 +50,111 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	kvStorage     map[string]string
+	lastRequestId map[int64]int64
+	operationChan map[int]chan Op // op by raft log index
 }
 
+func (kv *KVServer) appendOperationToEntry(op Op) bool {
+	idx, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		return false
+	}
+
+	kv.mu.Lock()
+	ch, ok := kv.operationChan[idx]
+	if !ok {
+		ch = make(chan Op, 1)
+		kv.operationChan[idx] = ch
+	}
+	kv.mu.Unlock()
+
+	select {
+	case appliedRaftEntry := <-ch:
+		return op == appliedRaftEntry
+	case <-time.After(1000 * time.Millisecond):
+		return false
+	}
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	entry := Op{}
+	entry.Op = GET
+	entry.Key = args.Key
+
+	entry.ClientId = args.ClientId
+	entry.RequestId = args.RequestId
+
+	ok := kv.appendOperationToEntry(entry)
+	if !ok {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	reply.Err = OK
+
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	reply.Value = kv.kvStorage[args.Key]
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	entry := Op{}
+	entry.Op = args.Op
+	entry.Key = args.Key
+	entry.Value = args.Value
+
+	entry.ClientId = args.ClientId
+	entry.RequestId = args.RequestId
+
+	ok := kv.appendOperationToEntry(entry)
+	if !ok {
+		reply.Err = ErrWrongLeader
+	} else {
+		reply.Err = OK
+	}
+}
+
+func (kv *KVServer) stateMachine(op Op) {
+	switch op.Op {
+	case PUT:
+		kv.kvStorage[op.Key] = op.Value
+	case APPEND:
+		kv.kvStorage[op.Key] += op.Value
+	}
+}
+
+func (kv *KVServer) deduplicate(op Op) bool {
+	lastSavedRid, ok := kv.lastRequestId[op.ClientId]
+	if ok {
+		return lastSavedRid >= op.RequestId
+	}
+	return false
+}
+
+func (kv *KVServer) kernelEventLoop() {
+	for {
+		msg := <-kv.applyCh
+		op := msg.Command.(Op)
+
+		kv.mu.Lock()
+		if !kv.deduplicate(op) {
+			kv.stateMachine(op)
+			kv.lastRequestId[op.ClientId] = op.RequestId
+		}
+
+		ch, ok := kv.operationChan[msg.CommandIndex]
+		if ok {
+			select {
+			case <-ch: // drain bad data
+			default:
+			}
+		} else {
+			ch = make(chan Op, 1)
+			kv.operationChan[msg.CommandIndex] = ch
+		}
+		ch <- op
+		kv.mu.Unlock()
+	}
 }
 
 //
@@ -96,6 +207,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.kvStorage = make(map[string]string)
+	kv.lastRequestId = make(map[int64]int64)
+	kv.operationChan = make(map[int]chan Op)
 
+	go kv.kernelEventLoop()
 	return kv
 }
