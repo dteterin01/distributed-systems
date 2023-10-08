@@ -26,6 +26,8 @@ const (
 type LogEntry struct {
 	Term    int
 	Command interface{}
+
+	Index int
 }
 
 //
@@ -38,7 +40,7 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	// Your data here (2A, 2B, 2C).
+	// Your Data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
@@ -124,5 +126,5 @@ func (rf *Raft) getLastLogTerm() int {
 }
 
 func (rf *Raft) getLastLogIndex() int {
-	return len(rf.log) - 1
+	return rf.log[len(rf.log)-1].Index
 }

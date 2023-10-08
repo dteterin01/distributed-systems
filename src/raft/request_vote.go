@@ -79,7 +79,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 
 	if rf.term < reply.Term {
-		// revert to follower state and update current term
+		// revert to follower state and update current Term
 		rf.changeToFollowerState(reply.Term)
 		return ok
 	}

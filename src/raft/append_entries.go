@@ -20,10 +20,13 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
+
+	reply.Success = false
 
 	if args.Term < rf.term {
 		reply.Term = rf.term
-		reply.Success = false
+		reply.TryIndex = rf.getLastLogIndex() + 1
 		return
 	}
 
@@ -39,39 +42,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	if args.PrevLogIndex >= 0 && args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
-		term := rf.log[args.PrevLogIndex].Term
-		for i := args.PrevLogIndex - 1; i >= 0 && rf.log[i].Term == term; i-- {
-			reply.TryIndex = i + 1
-		}
-	} else {
-		var restLog []LogEntry
-		defer rf.persist()
+	index := rf.log[0].Index
 
-		rf.log, restLog = rf.log[:args.PrevLogIndex+1], rf.log[args.PrevLogIndex+1:]
-		if existConflictingEntry(restLog, args.Log) || len(restLog) < len(args.Log) {
-			rf.log = append(rf.log, args.Log...)
-		} else {
-			rf.log = append(rf.log, restLog...)
+	if args.PrevLogIndex >= 0 && args.PrevLogTerm != rf.log[args.PrevLogIndex-index].Term {
+		term := rf.log[args.PrevLogIndex-index].Term
+		for i := args.PrevLogIndex - 1; i >= index; i-- {
+			if rf.log[i-index].Term != term {
+				reply.TryIndex = i + 1
+				break
+			}
 		}
+	} else if args.PrevLogIndex >= index-1 {
+		rf.log = rf.log[:args.PrevLogIndex-index+1]
+		rf.log = append(rf.log, args.Log...)
 
 		reply.Success = true
-		reply.TryIndex = args.PrevLogIndex
+		reply.TryIndex = args.PrevLogIndex + len(args.Log)
 
 		if rf.commitIndex < args.CommitIndex {
 			rf.commitIndex = min(args.CommitIndex, rf.getLastLogIndex())
 			go rf.commitLog()
 		}
 	}
-}
-
-func existConflictingEntry(localLog []LogEntry, leaderLog []LogEntry) bool {
-	for i := 0; i < min(len(leaderLog), len(localLog)); i++ {
-		if leaderLog[i].Term != localLog[i].Term {
-			return true
-		}
-	}
-	return false
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -89,10 +81,12 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	}
 
 	if reply.Success {
-		rf.matchIndex[server] = args.PrevLogIndex + len(args.Log)
-		rf.nextIndex[server] = rf.matchIndex[server] + 1
+		if len(args.Log) > 0 {
+			rf.nextIndex[server] = args.Log[len(args.Log)-1].Index + 1
+			rf.matchIndex[server] = rf.nextIndex[server] - 1
+		}
 	} else {
-		rf.nextIndex[server] = reply.TryIndex
+		rf.nextIndex[server] = min(reply.TryIndex, rf.getLastLogIndex())
 	}
 
 	rf.commitApplicableLogs()
@@ -101,7 +95,9 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 func (rf *Raft) commitApplicableLogs() {
-	for possibleIndex := rf.getLastLogIndex(); possibleIndex > rf.commitIndex && rf.log[possibleIndex].Term == rf.term; possibleIndex-- {
+	index := rf.log[0].Index
+
+	for possibleIndex := rf.getLastLogIndex(); possibleIndex > rf.commitIndex && rf.log[possibleIndex-index].Term == rf.term; possibleIndex-- {
 		count := 1
 		for i := range rf.peers {
 			if i != rf.me && rf.matchIndex[i] >= possibleIndex {
@@ -120,29 +116,39 @@ func (rf *Raft) broadcastAppendEntries() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	var snapshot []byte
+
+	baseIndex := rf.log[0].Index
+
 	for server := range rf.peers {
 		if server != rf.me && rf.state == Leader {
-			args := rf.buildHeartBeatRequest(server)
-			go rf.sendAppendEntries(server, args, &AppendEntriesReply{})
+			if rf.nextIndex[server] > baseIndex {
+				args := rf.buildHeartBeatRequest(server, baseIndex)
+				go rf.sendAppendEntries(server, args, &AppendEntriesReply{})
+			} else {
+				if snapshot == nil {
+					snapshot = rf.persister.ReadSnapshot()
+				}
+				args := rf.buildSnapshotRequest(snapshot)
+				go rf.sendInstallSnapshot(server, args, &SnapshotReply{})
+			}
+
 		}
 	}
 }
 
-func (rf *Raft) buildHeartBeatRequest(server int) *AppendEntriesArgs {
-	args := &AppendEntriesArgs{
-		Term:         rf.term,
-		LeaderId:     rf.me,
-		PrevLogIndex: rf.nextIndex[server] - 1,
-		CommitIndex:  rf.commitIndex,
+func (rf *Raft) buildHeartBeatRequest(server int, index int) *AppendEntriesArgs {
+	args := &AppendEntriesArgs{}
+	args.Term = rf.term
+	args.LeaderId = rf.me
+	args.PrevLogIndex = rf.nextIndex[server] - 1
+	if args.PrevLogIndex >= index {
+		args.PrevLogTerm = rf.log[args.PrevLogIndex-index].Term
 	}
-
-	if args.PrevLogIndex >= 0 {
-		args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-	}
-
 	if rf.nextIndex[server] <= rf.getLastLogIndex() {
-		args.Log = rf.log[rf.nextIndex[server]:]
+		args.Log = rf.log[rf.nextIndex[server]-index:]
 	}
+	args.CommitIndex = rf.commitIndex
 
 	return args
 }

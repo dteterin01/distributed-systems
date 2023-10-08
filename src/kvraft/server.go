@@ -4,20 +4,11 @@ import (
 	"../labgob"
 	"../labrpc"
 	"../raft"
-	"log"
+	"bytes"
 	"sync"
 	"sync/atomic"
 	"time"
 )
-
-const Debug = 0
-
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug > 0 {
-		log.Printf(format, a...)
-	}
-	return
-}
 
 const (
 	GET    = "GET"
@@ -131,28 +122,52 @@ func (kv *KVServer) deduplicate(op Op) bool {
 	return false
 }
 
+func (kv *KVServer) applySnapshot(snapshot []byte) {
+	var lastIncludedIndex, lastIncludedTerm int
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+
+	d.Decode(&lastIncludedIndex)
+	d.Decode(&lastIncludedTerm)
+	d.Decode(&kv.kvStorage)
+	d.Decode(&kv.lastRequestId)
+}
+
 func (kv *KVServer) kernelEventLoop() {
 	for {
 		msg := <-kv.applyCh
-		op := msg.Command.(Op)
 
 		kv.mu.Lock()
-		if !kv.deduplicate(op) {
-			kv.stateMachine(op)
-			kv.lastRequestId[op.ClientId] = op.RequestId
-		}
-
-		ch, ok := kv.operationChan[msg.CommandIndex]
-		if ok {
-			select {
-			case <-ch: // drain bad data
-			default:
-			}
+		if msg.IsUseSnapshot {
+			kv.applySnapshot(msg.Snapshot)
 		} else {
-			ch = make(chan Op, 1)
-			kv.operationChan[msg.CommandIndex] = ch
+			op := msg.Command.(Op)
+
+			if !kv.deduplicate(op) {
+				kv.stateMachine(op)
+				kv.lastRequestId[op.ClientId] = op.RequestId
+			}
+
+			ch, ok := kv.operationChan[msg.CommandIndex]
+			if ok {
+				select {
+				case <-ch: // drain bad data
+				default:
+				}
+			} else {
+				ch = make(chan Op, 1)
+				kv.operationChan[msg.CommandIndex] = ch
+			}
+			ch <- op
+
+			if kv.maxraftstate != -1 && kv.rf.GetRaftSize() > kv.maxraftstate {
+				w := new(bytes.Buffer)
+				e := labgob.NewEncoder(w)
+				e.Encode(kv.kvStorage)
+				e.Encode(kv.lastRequestId)
+				go kv.rf.CreateSnapshot(w.Bytes(), msg.CommandIndex)
+			}
 		}
-		ch <- op
 		kv.mu.Unlock()
 	}
 }
@@ -203,8 +218,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
-	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.applyCh = make(chan raft.ApplyMsg, 100)
 
 	// You may need initialization code here.
 	kv.kvStorage = make(map[string]string)
@@ -212,5 +226,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.operationChan = make(map[int]chan Op)
 
 	go kv.kernelEventLoop()
+
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	return kv
 }

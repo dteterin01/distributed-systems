@@ -34,6 +34,20 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.term, rf.state == Leader
 }
 
+func (rf *Raft) getRaftState() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.term)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+
+	return w.Bytes()
+}
+
+func (rf *Raft) GetRaftSize() int {
+	return rf.persister.RaftStateSize()
+}
+
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -57,7 +71,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 		term := rf.term
 		index := rf.getLastLogIndex() + 1
-		rf.log = append(rf.log, LogEntry{Term: term, Command: command})
+		rf.log = append(rf.log, LogEntry{Index: index, Term: term, Command: command})
+
 		return index, term, isLeader
 	}
 
@@ -154,6 +169,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.chanGrantVote = make(chan bool, 100)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.recoverFromSnapshot(persister.ReadSnapshot())
 	rf.persist()
 
 	go rf.eventLoop()

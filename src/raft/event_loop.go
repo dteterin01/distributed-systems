@@ -5,13 +5,13 @@ import (
 	"time"
 )
 
-const RandomWaitIncrement int32 = 1000
-const Wait int32 = 500
+const RandomWaitIncrement int32 = 30
+const Wait int32 = 200
 
-const RandomWaitElectionIncrement int32 = 400
-const WaitElection int32 = 300
+const RandomWaitElectionIncrement int32 = 300
+const WaitElection int32 = 200
 
-const BroadcastHeartBeat = 200
+const BroadcastHeartBeat = 60
 
 func (rf *Raft) eventLoop() {
 	for !rf.killed() {
