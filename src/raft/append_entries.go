@@ -44,7 +44,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	index := rf.log[0].Index
 
-	if args.PrevLogIndex >= 0 && args.PrevLogTerm != rf.log[args.PrevLogIndex-index].Term {
+	if args.PrevLogIndex >= index && args.PrevLogTerm != rf.log[args.PrevLogIndex-index].Term {
 		term := rf.log[args.PrevLogIndex-index].Term
 		for i := args.PrevLogIndex - 1; i >= index; i-- {
 			if rf.log[i-index].Term != term {
