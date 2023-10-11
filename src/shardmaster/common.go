@@ -28,6 +28,11 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
+type RequestCommon struct {
+	RequestId int64
+	ClientId  int64
+}
+
 const (
 	OK = "OK"
 )
@@ -36,6 +41,7 @@ type Err string
 
 type JoinArgs struct {
 	Servers map[int][]string // new GID -> servers mappings
+	Request RequestCommon
 }
 
 type JoinReply struct {
@@ -44,7 +50,8 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs    []int
+	Request RequestCommon
 }
 
 type LeaveReply struct {
@@ -53,8 +60,9 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard   int
+	GID     int
+	Request RequestCommon
 }
 
 type MoveReply struct {
@@ -63,7 +71,8 @@ type MoveReply struct {
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+	Num     int // desired config number
+	Request RequestCommon
 }
 
 type QueryReply struct {
